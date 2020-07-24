@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"time"
 
-	dms "github.com/openshift/deadmanssnitch-operator/pkg/controller/deadmanssnitch"
+	dms "github.com/openshift/deadmanssnitch-operator/pkg/controller/deadmanssnitchintegration"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
