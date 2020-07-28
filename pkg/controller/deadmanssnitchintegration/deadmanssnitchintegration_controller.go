@@ -3,13 +3,14 @@ package deadmanssnitchintegration
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/openshift/deadmanssnitch-operator/config"
 	deadmansnitchv1alpha1 "github.com/openshift/deadmanssnitch-operator/pkg/apis/deadmansnitch/v1alpha1"
 	"github.com/openshift/deadmanssnitch-operator/pkg/dmsclient"
+	"github.com/openshift/deadmanssnitch-operator/pkg/localmetrics"
 	"github.com/openshift/deadmanssnitch-operator/pkg/utils"
 	hivev1 "github.com/openshift/hive/pkg/apis/hive/v1"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,8 +51,7 @@ func Add(mgr manager.Manager) error {
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 	return &ReconcileDeadmansSnitchIntegration{
-		//client:    mgr.GetClient(),
-		client:    mgr.GetClient(),
+		client:    utils.NewClientWithMetricsOrDie(log, mgr, config.OperatorName),
 		scheme:    mgr.GetScheme(),
 		dmsclient: dmsclient.NewClient,
 	}
@@ -122,7 +122,7 @@ type ReconcileDeadmansSnitchIntegration struct {
 	// that reads objects from the cache and writes to the apiserver
 	client    client.Client
 	scheme    *runtime.Scheme
-	dmsclient func(apiKey string) dmsclient.Client
+	dmsclient func(apiKey string, collector *localmetrics.MetricsCollector) dmsclient.Client
 }
 
 // Reconcile reads that state of the cluster for a DeadmansSnitchIntegration object and makes changes based on the state read
@@ -132,6 +132,13 @@ func (r *ReconcileDeadmansSnitchIntegration) Reconcile(request reconcile.Request
 	reqLogger.Info("Reconciling DeadmansSnitchIntegration")
 	// Fetch the DeadmansSnitchIntegration dmsi
 	dmsi := &deadmansnitchv1alpha1.DeadmansSnitchIntegration{}
+
+	start := time.Now()
+	defer func() {
+		reconcileDuration := time.Since(start).Seconds()
+		reqLogger.WithValues("Duration", reconcileDuration).Info("Reconcile complete.")
+		localmetrics.Collector.ObserveReconcile(reconcileDuration)
+	}()
 
 	err := r.client.Get(context.TODO(), request.NamespacedName, dmsi)
 	if err != nil {
@@ -150,7 +157,7 @@ func (r *ReconcileDeadmansSnitchIntegration) Reconcile(request reconcile.Request
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	dmsc := r.dmsclient(dmsAPIKey)
+	dmsc := r.dmsclient(dmsAPIKey, localmetrics.Collector)
 
 	matchingClusterDeployments, err := r.getMatchingClusterDeployment(dmsi)
 	if err != nil {
