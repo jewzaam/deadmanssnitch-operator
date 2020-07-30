@@ -241,7 +241,7 @@ func (r *ReconcileDeadmansSnitchIntegration) dmsAddFinalizer(dmsi *deadmansnitch
 		}
 
 	}
-	logger.Info("Cluster deployment finalizer already exists Name: ")
+	logger.Info("Cluster deployment finalizer created nothing to do here ...: ")
 
 	//checking i finalizers exits in the dmsi cr adding if they dont
 	logger.Info("Checking for finalizers")
@@ -254,7 +254,7 @@ func (r *ReconcileDeadmansSnitchIntegration) dmsAddFinalizer(dmsi *deadmansnitch
 		}
 
 	}
-	logger.Info("DMSI finalizer already exists: ")
+	logger.Info("DMSI finalizer created nothing to do here..: ")
 
 	return nil
 
@@ -300,7 +300,7 @@ func (r *ReconcileDeadmansSnitchIntegration) createSnitch(dmsi *deadmansnitchv1a
 		logger.Error(err, "Unable to get Snitch by name")
 		return err
 	}
-	logger.Info("Snitch found already exists ")
+	logger.Info("Snitch created nothing to do here.... ")
 	return nil
 }
 
@@ -337,7 +337,7 @@ func (r *ReconcileDeadmansSnitchIntegration) createSecret(dmsi *deadmansnitchv1a
 
 		}
 	}
-	logger.Info("Secret Already Present, nothing to do here...")
+	logger.Info("Secret created , nothing to do here...")
 	return nil
 }
 
