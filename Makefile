@@ -33,5 +33,5 @@ docker-push:
 	$(DOCKER_CMD) push ${IMG}
 
 .PHONY: generate-crd
-generate-crd:
+generate:
 	go generate ./...
