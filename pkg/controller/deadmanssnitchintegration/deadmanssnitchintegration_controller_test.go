@@ -42,7 +42,7 @@ const (
 	testOtherSyncSetPostfix           = "-something-else"
 	snitchNamePostFix                 = "test-postfix"
 	deadMansSnitchTagKey              = "testTag"
-	deadMansSnitchFinalizer           = DeadMansSnitchFinalizerPrefix + testDeadMansSnitchintegrationName
+	deadMansSnitchFinalizer           = config.FinalizerBase + testDeadMansSnitchintegrationName
 	deadMansSnitchOperatorNamespace   = "deadmanssnitch-operator"
 	deadMansSnitchAPISecretName       = "deadmanssnitch-api-key"
 )
@@ -198,6 +198,121 @@ func deletedNonManagedClusterDeployment() *hivev1.ClusterDeployment {
 	cd.DeletionTimestamp = &now
 
 	return cd
+}
+
+// Test when a cluster initially matches the DMSI then is updated to not.
+func TestReconcileMatchThenNotmatchClusterDeployment(t *testing.T) {
+	err := dmsapis.AddToScheme(scheme.Scheme)
+	assert.NoError(t, err)
+	err = hiveapis.AddToScheme(scheme.Scheme)
+	assert.NoError(t, err)
+
+	// 1. setup CD that matches DMSI
+	// 2. reconcile 3x
+	// 3. confirm dms finalier was added
+	// 4. update CD to NOT match DMSI
+	// 5. reconcile 2x
+	// 6. confirm dms finalizer was REMOVED
+
+	clusterDeployment := testClusterDeployment()
+
+	tests := []struct {
+		name         string
+		localObjects []runtime.Object
+		setupDMSMock func(*mockdms.MockClientMockRecorder)
+	}{
+		{
+			localObjects: []runtime.Object{
+				clusterDeployment,
+				testSecret(),
+				testDeadMansSnitchIntegrationEmptyPostfix(),
+			},
+			setupDMSMock: func(r *mockdms.MockClientMockRecorder) {
+				r.Create(gomock.Any()).Return(dmsclient.Snitch{CheckInURL: testSnitchURL, Tags: []string{testTag}}, nil).Times(1)
+				r.FindSnitchesByName(gomock.Any()).Return([]dmsclient.Snitch{}, nil).Times(1)
+				r.FindSnitchesByName(gomock.Any()).Return([]dmsclient.Snitch{
+					{
+						CheckInURL: testSnitchURL,
+						Status:     "pending",
+					},
+				}, nil).Times(2)
+				r.CheckIn(gomock.Any()).Return(nil).Times(1)
+				r.Update(gomock.Any()).Times(0)
+				r.Delete(gomock.Any()).Times(1)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// ARRANGE
+			mocks := setupDefaultMocks(t, test.localObjects)
+			test.setupDMSMock(mocks.mockDMSClient.EXPECT())
+
+			// This is necessary for the mocks to report failures like methods not being called an expected number of times.
+			// after mocks is defined
+			defer mocks.mockCtrl.Finish()
+
+			rdms := &ReconcileDeadmansSnitchIntegration{
+				client: mocks.fakeKubeClient,
+				scheme: scheme.Scheme,
+				dmsclient: func(apiKey string, collector *localmetrics.MetricsCollector) dmsclient.Client {
+					return mocks.mockDMSClient
+				},
+			}
+
+			// run reconcile multiple times to verify API calls to DMS are minimal
+			_, err1 := rdms.Reconcile(reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testDeadMansSnitchintegrationName,
+					Namespace: config.OperatorNamespace,
+				},
+			})
+			_, err2 := rdms.Reconcile(reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testDeadMansSnitchintegrationName,
+					Namespace: config.OperatorNamespace,
+				},
+			})
+			_, err3 := rdms.Reconcile(reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testDeadMansSnitchintegrationName,
+					Namespace: config.OperatorNamespace,
+				},
+			})
+
+			// make the CD not match the DMSI
+			clusterDeployment.ObjectMeta.Labels[config.ClusterDeploymentManagedLabel] = "false"
+
+			// reconcile again (should remove the DMS etc)
+			_, err4 := rdms.Reconcile(reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testDeadMansSnitchintegrationName,
+					Namespace: config.OperatorNamespace,
+				},
+			})
+			_, err5 := rdms.Reconcile(reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testDeadMansSnitchintegrationName,
+					Namespace: config.OperatorNamespace,
+				},
+			})
+			_, err6 := rdms.Reconcile(reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      testDeadMansSnitchintegrationName,
+					Namespace: config.OperatorNamespace,
+				},
+			})
+
+			assert.NoError(t, err1, "Unexpected Error with Reconcile (1 of 6)")
+			assert.NoError(t, err2, "Unexpected Error with Reconcile (2 of 6)")
+			assert.NoError(t, err3, "Unexpected Error with Reconcile (3 of 6)")
+			assert.NoError(t, err4, "Unexpected Error with Reconcile (4 of 6)")
+			assert.NoError(t, err5, "Unexpected Error with Reconcile (5 of 6)")
+			assert.NoError(t, err6, "Unexpected Error with Reconcile (6 of 6)")
+		})
+	}
+
 }
 
 func TestReconcileClusterDeployment(t *testing.T) {
@@ -406,7 +521,7 @@ func TestReconcileClusterDeployment(t *testing.T) {
 
 			assert.NoError(t, err1, "Unexpected Error with Reconcile (1 of 3)")
 			assert.NoError(t, err2, "Unexpected Error with Reconcile (2 of 3)")
-			assert.NoError(t, err3, "Unexpected Error with Reconcile (2 of 3)")
+			assert.NoError(t, err3, "Unexpected Error with Reconcile (3 of 3)")
 			assert.True(t, test.verifySyncSets(mocks.fakeKubeClient, test.expectedSyncSets))
 			assert.True(t, test.verifySecret(mocks.fakeKubeClient, test.expectedSecret))
 		})

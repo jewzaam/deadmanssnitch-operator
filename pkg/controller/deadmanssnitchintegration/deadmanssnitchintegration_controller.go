@@ -30,8 +30,7 @@ import (
 var log = logf.Log.WithName("controller_deadmanssnitchintegration")
 
 const (
-	deadMansSnitchAPISecretKey    = "deadmanssnitch-api-key"
-	DeadMansSnitchFinalizerPrefix = "dms.managed.openshift.io/deadmanssnitch-"
+	deadMansSnitchAPISecretKey = "deadmanssnitch-api-key"
 )
 
 // Add creates a new DeadmansSnitchIntegration Controller and adds it to the Manager. The Manager will set fields on the Controller
@@ -139,7 +138,7 @@ func (r *ReconcileDeadmansSnitchIntegration) Reconcile(request reconcile.Request
 	}
 
 	// set the DMS finalizer variable
-	deadMansSnitchFinalizer := DeadMansSnitchFinalizerPrefix + dmsi.Name
+	deadMansSnitchFinalizer := finalizerName(dmsi)
 
 	dmsAPIKey, err := utils.LoadSecretData(r.client, dmsi.Spec.DmsAPIKeySecretRef.Name,
 		dmsi.Spec.DmsAPIKeySecretRef.Namespace, deadMansSnitchAPISecretKey)
@@ -169,7 +168,7 @@ func (r *ReconcileDeadmansSnitchIntegration) Reconcile(request reconcile.Request
 		}
 		if utils.HasFinalizer(dmsi, deadMansSnitchFinalizer) {
 			utils.DeleteFinalizer(dmsi, deadMansSnitchFinalizer)
-			reqLogger.Info("Deleting DMSI finalizer from dmsi", "DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DMSI.Name", dmsi.Name)
+			reqLogger.Info("Deleting DMSI finalizer from dmsi", "DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DeadMansSnitchIntegreation.Name", dmsi.Name)
 			err = r.client.Update(context.TODO(), dmsi)
 			if err != nil {
 				reqLogger.Error(err, "Error deleting Finalizer from dmsi")
@@ -228,6 +227,17 @@ func (r *ReconcileDeadmansSnitchIntegration) Reconcile(request reconcile.Request
 
 // getMatchingClusterDeployment gets all ClusterDeployments matching the DMSI selector
 func (r *ReconcileDeadmansSnitchIntegration) getMatchingClusterDeployment(dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration) (*hivev1.ClusterDeploymentList, error) {
+
+	// need to load all CD that match via selector
+	// AND all CD that currently have this DMSI's finalizer
+	// and then return that result set
+
+	// get all CD and walk through it (TODO find a better way!!)
+	// (if this fails, this is OK, just ignore it)
+	allClusterDeployments := &hivev1.ClusterDeploymentList{}
+	err := r.client.List(context.TODO(), allClusterDeployments)
+
+	// get the set of CD that match the selector
 	selector, err := metav1.LabelSelectorAsSelector(&dmsi.Spec.ClusterDeploymentSelector)
 	if err != nil {
 		return nil, err
@@ -236,6 +246,20 @@ func (r *ReconcileDeadmansSnitchIntegration) getMatchingClusterDeployment(dmsi *
 	matchingClusterDeployments := &hivev1.ClusterDeploymentList{}
 	listOpts := &client.ListOptions{LabelSelector: selector}
 	err = r.client.List(context.TODO(), matchingClusterDeployments, listOpts)
+
+	// and now add the CD's with the finalizer we didn't already find into the result set
+	dmsiFinalizerName := finalizerName(dmsi)
+	for _, cd := range allClusterDeployments.Items {
+		for _, f := range cd.ObjectMeta.Finalizers {
+			if f == dmsiFinalizerName {
+				_, found := Find(matchingClusterDeployments.Items, cd)
+				if !found {
+					matchingClusterDeployments.Items = append(matchingClusterDeployments.Items, cd)
+				}
+			}
+		}
+	}
+
 	return matchingClusterDeployments, err
 }
 
@@ -246,10 +270,19 @@ func (r *ReconcileDeadmansSnitchIntegration) getAllClusterDeployment() (*hivev1.
 	return matchingClusterDeployments, err
 }
 
+func Find(slice []hivev1.ClusterDeployment, val hivev1.ClusterDeployment) (int, bool) {
+	for i, item := range slice {
+		if item.Namespace == val.Namespace && item.Name == val.Name {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
 // Add finalizers to both the deadmanssnitch integreation and the matching cluster deployment
 func (r *ReconcileDeadmansSnitchIntegration) dmsAddFinalizer(dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration, clusterdeployment *hivev1.ClusterDeployment) error {
-	deadMansSnitchFinalizer := DeadMansSnitchFinalizerPrefix + dmsi.Name
-	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DMSI.Name", dmsi.Name, "cluster-deployment.Name:", clusterdeployment.Name, "cluster-deployment.Namespace:", clusterdeployment.Namespace)
+	deadMansSnitchFinalizer := finalizerName(dmsi)
+	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DeadMansSnitchIntegreation.Name", dmsi.Name, "ClusterDeployment.Name:", clusterdeployment.Name, "ClusterDeployment.Namespace:", clusterdeployment.Namespace)
 	//checking i finalizers exits in the clusterdeployment adding if they dont
 	logger.Info("Checking for finalizers")
 	if !utils.HasFinalizer(clusterdeployment, deadMansSnitchFinalizer) {
@@ -282,7 +315,7 @@ func (r *ReconcileDeadmansSnitchIntegration) dmsAddFinalizer(dmsi *deadmanssnitc
 
 // create snitch in deadmanssnitch.com with information retrived from dmsi cr as well as the matching cluster deployment
 func (r *ReconcileDeadmansSnitchIntegration) createSnitch(dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration, cd *hivev1.ClusterDeployment, dmsc dmsclient.Client) error {
-	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DMSI.Name", dmsi.Name, "cluster-deployment.Name:", cd.Name, "cluster-deployment.Namespace:", cd.Namespace)
+	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DeadMansSnitchIntegreation.Name", dmsi.Name, "ClusterDeployment.Name:", cd.Name, "ClusterDeployment.Namespace:", cd.Namespace)
 	snitchName := utils.DmsSnitchName(cd.Spec.ClusterName, cd.Spec.BaseDomain, dmsi.Spec.SnitchNamePostFix)
 
 	ssName := utils.SecretName(cd.Spec.ClusterName, dmsi.Spec.SnitchNamePostFix)
@@ -334,7 +367,7 @@ func (r *ReconcileDeadmansSnitchIntegration) createSnitch(dmsi *deadmanssnitchv1
 
 //Create secret containing the snitch url
 func (r *ReconcileDeadmansSnitchIntegration) createSecret(dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration, dmsc dmsclient.Client, cd hivev1.ClusterDeployment) error {
-	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DMSI.Name", dmsi.Name, "cluster-deployment.Name:", cd.Name, "cluster-deployment.Namespace:", cd.Namespace)
+	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DeadMansSnitchIntegreation.Name", dmsi.Name, "ClusterDeployment.Name:", cd.Name, "ClusterDeployment.Namespace:", cd.Namespace)
 	dmsSecret := utils.SecretName(cd.Spec.ClusterName, dmsi.Spec.SnitchNamePostFix)
 	logger.Info("Checking if secret already exits")
 	err := r.client.Get(context.TODO(),
@@ -371,7 +404,7 @@ func (r *ReconcileDeadmansSnitchIntegration) createSecret(dmsi *deadmanssnitchv1
 
 //creating the syncset which contain the secret with the snitch url
 func (r *ReconcileDeadmansSnitchIntegration) createSyncset(dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration, cd hivev1.ClusterDeployment) error {
-	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DMSI.Name", dmsi.Name, "cluster-deployment.Name:", cd.Name, "cluster-deployment.Namespace:", cd.Namespace)
+	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DeadMansSnitchIntegreation.Name", dmsi.Name, "ClusterDeployment.Name:", cd.Name, "ClusterDeployment.Namespace:", cd.Namespace)
 	ssName := utils.SecretName(cd.Spec.ClusterName, dmsi.Spec.SnitchNamePostFix)
 	err := r.client.Get(context.TODO(), types.NamespacedName{Name: ssName, Namespace: cd.Namespace}, &hivev1.SyncSet{})
 
@@ -394,8 +427,8 @@ func (r *ReconcileDeadmansSnitchIntegration) createSyncset(dmsi *deadmanssnitchv
 		// return directly if the syscset already existed
 
 	}
-	return nil
 
+	return nil
 }
 
 func newDMSSecret(namespace string, name string, snitchURL string) *corev1.Secret {
@@ -416,7 +449,6 @@ func newDMSSecret(namespace string, name string, snitchURL string) *corev1.Secre
 	}
 
 	return dmsSecret
-
 }
 
 func newSyncSet(namespace string, dmsSecret string, clusterDeploymentName string, dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration) *hivev1.SyncSet {
@@ -451,13 +483,16 @@ func newSyncSet(namespace string, dmsSecret string, clusterDeploymentName string
 	}
 
 	return newSS
+}
 
+func finalizerName(dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration) string {
+	return config.FinalizerBase + dmsi.Name
 }
 
 // delete snitches,secrets and syncset associated with the cluster deployment that has been deleted
 func (r *ReconcileDeadmansSnitchIntegration) deleteDMSClusterDeployment(dmsi *deadmanssnitchv1alpha1.DeadmansSnitchIntegration, clusterDeployment *hivev1.ClusterDeployment, dmsc dmsclient.Client) error {
-	deadMansSnitchFinalizer := DeadMansSnitchFinalizerPrefix + dmsi.Name
-	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DMSI.Name", dmsi.Name, "cluster-deployment.Name:", clusterDeployment.Name, "cluster-deployment.Namespace:", clusterDeployment.Namespace)
+	deadMansSnitchFinalizer := finalizerName(dmsi)
+	logger := log.WithValues("DeadMansSnitchIntegreation.Namespace", dmsi.Namespace, "DeadMansSnitchIntegreation.Name", dmsi.Name, "ClusterDeployment.Name:", clusterDeployment.Name, "ClusterDeployment.Namespace:", clusterDeployment.Namespace)
 	// Delete the dms
 	logger.Info("Deleting the DMS from api.deadmanssnitch.com")
 	snitchName := utils.DmsSnitchName(clusterDeployment.Spec.ClusterName, clusterDeployment.Spec.BaseDomain, dmsi.Spec.SnitchNamePostFix)
@@ -502,5 +537,4 @@ func (r *ReconcileDeadmansSnitchIntegration) deleteDMSClusterDeployment(dmsi *de
 	}
 
 	return nil
-
 }
