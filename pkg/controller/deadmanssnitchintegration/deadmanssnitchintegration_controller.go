@@ -158,6 +158,7 @@ func (r *ReconcileDeadmansSnitchIntegration) Reconcile(request reconcile.Request
 	}
 
 	if dmsi.DeletionTimestamp != nil {
+		// trigger DMS deletion for ALL CD based on finalizer
 		for _, clusterdeployment := range allClusterDeployments.Items {
 			if utils.HasFinalizer(&clusterdeployment, deadMansSnitchFinalizer) {
 				err = r.deleteDMSClusterDeployment(dmsi, &clusterdeployment, dmsc)
@@ -180,10 +181,22 @@ func (r *ReconcileDeadmansSnitchIntegration) Reconcile(request reconcile.Request
 
 	for _, clusterdeployment := range allClusterDeployments.Items {
 		if clusterdeployment.DeletionTimestamp != nil {
+			// delete DMS for any CD that are being deleted
 			if utils.HasFinalizer(&clusterdeployment, deadMansSnitchFinalizer) {
 				err = r.deleteDMSClusterDeployment(dmsi, &clusterdeployment, dmsc)
 				if err != nil {
 					return reconcile.Result{}, err
+				}
+			}
+		} else {
+			// delete DMS for any CD that has the matching finalizer but no longer matches the clusterDeploymentSelector
+			if utils.HasFinalizer(&clusterdeployment, deadMansSnitchFinalizer) {
+				_, found := Find(matchingClusterDeployments.Items, clusterdeployment)
+				if found {
+					err = r.deleteDMSClusterDeployment(dmsi, &clusterdeployment, dmsc)
+					if err != nil {
+						return reconcile.Result{}, err
+					}
 				}
 			}
 		}
